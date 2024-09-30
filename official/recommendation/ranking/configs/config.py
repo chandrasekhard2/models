@@ -75,6 +75,7 @@ class DataConfig(hyperparams.Config):
   sharding: bool = True
   num_shards_per_host: int = 8
   use_cached_data: bool = False
+  num_shards: int = 1
 
 
 @dataclasses.dataclass
@@ -85,7 +86,7 @@ class ModelConfig(hyperparams.Config):
     num_dense_features: Number of dense features.
     vocab_sizes: Vocab sizes for each of the sparse features. The order agrees
       with the order of the input data.
-    use_multi_hot: Flag to determine if enabling multi-hot data loading and 
+    use_multi_hot: Flag to determine if enabling multi-hot data loading and
       training used for DLRM V2
     multi_hot_sizes: List to pass in the multi hot size of each sparse embedding
       feature
@@ -101,9 +102,9 @@ class ModelConfig(hyperparams.Config):
     top_mlp: The sizes of hidden layers for top MLP.
     interaction: Interaction can be on of the following:
      'dot', 'cross', 'multi_layer_dcn'.
-    concat_dense: Weather to concatenate output from interaction module with 
+    concat_dense: Weather to concatenate output from interaction module with
       dense output again
-    dcn_num_layers: Number of Stacked DCN layers used in the dcn interaction 
+    dcn_num_layers: Number of Stacked DCN layers used in the dcn interaction
       module
     dcn_low_rank_dim: Project dimension in stacked DCN layers for dcn
       interaction module
@@ -140,6 +141,8 @@ class ModelConfig(hyperparams.Config):
   max_unique_ids_per_table: Union[int, List[int]] | None = None
   allow_id_dropping: bool = False
   initialize_tables_on_host: bool = False
+  enable_fast_table_initialization: bool = False
+  disable_table_stacking: bool = False
 
 
 @dataclasses.dataclass
@@ -458,3 +461,4 @@ def dlrm_dcn_v2_criteo_tb_config() -> Config:
           'task.train_data.is_training != None',
           'task.validation_data.is_training != None',
       ])
+

@@ -142,7 +142,7 @@ class Trainer(_AsyncTrainer):
       self,
       config: ExperimentConfig,
       task: base_task.Task,
-      model: tf_keras.Model,
+      model: tf.keras.Model,
       optimizer: tf.optimizers.Optimizer,
       train: bool = True,
       evaluate: bool = True,
@@ -156,7 +156,7 @@ class Trainer(_AsyncTrainer):
     Args:
       config: An `ExperimentConfig` instance specifying experiment config.
       task: A base_task.Task instance.
-      model: The model instance, e.g. a tf_keras.Model instance.
+      model: The model instance, e.g. a tf.keras.Model instance.
       optimizer: tf.optimizers.Optimizer instance.
       train: bool, whether or not this trainer will be used for training.
         default to True.
@@ -207,8 +207,8 @@ class Trainer(_AsyncTrainer):
         optimizer=self.optimizer,
         **checkpoint_items)
 
-    self._train_loss = tf_keras.metrics.Mean("training_loss", dtype=tf.float32)
-    self._validation_loss = tf_keras.metrics.Mean(
+    self._train_loss = tf.keras.metrics.Mean("training_loss", dtype=tf.float32)
+    self._validation_loss = tf.keras.metrics.Mean(
         "validation_loss", dtype=tf.float32)
     model_metrics = model.metrics if hasattr(model, "metrics") else []
 
@@ -388,12 +388,13 @@ class Trainer(_AsyncTrainer):
         task_train_step = tf.function(self.task.train_step, jit_compile=True)
       else:
         task_train_step = self.task.train_step
-      logs = task_train_step(
-          inputs,
-          model=self.model,
-          optimizer=self.optimizer,
-          metrics=self.train_metrics)
-      self._train_loss.update_state(logs[self.task.loss])
+        task_train_step(
+            inputs,
+            model=self.model,
+            optimizer=self.optimizer,
+            metrics=self.train_metrics,
+        )
+      # self._train_loss.update_state(logs[self.task.loss])
       self.global_step.assign_add(1)
 
     inputs = self.next_train_inputs(iterator)
@@ -403,10 +404,6 @@ class Trainer(_AsyncTrainer):
     """Sets up metrics."""
     for metric in self.validation_metrics + [self.validation_loss]:
       metric.reset_states()
-    # Swaps weights to test on weights moving average.
-    if self.optimizer and isinstance(self.optimizer,
-                                     optimization.ExponentialMovingAverage):
-      self.optimizer.swap_weights()
 
   def next_eval_inputs(self, iterator):
     """Fetches the next inputs for the model during eval.
@@ -435,32 +432,15 @@ class Trainer(_AsyncTrainer):
 
   def eval_step(self, iterator):
     """See base class."""
-
     def step_fn(inputs):
-      logs = self.task.validation_step(
+      [label, prediction] = self.task.validation_step(
           inputs, model=self.model, metrics=self.validation_metrics)
-      if self.task.loss in logs:
-        self._validation_loss.update_state(logs[self.task.loss])
-      return logs
-
+      label = tf.expand_dims(label, axis=0)
+      prediction = tf.expand_dims(prediction, axis=0)
+      return [label, prediction]
     inputs, passthrough_logs = self.next_eval_inputs(iterator)
-    distributed_outputs = self.strategy.run(step_fn, args=(inputs,))
-    logs = tf.nest.map_structure(
-        self.strategy.experimental_local_results, distributed_outputs
-    )
-
-    if set(logs.keys()) & set(passthrough_logs.keys()):
-      logging.warning(
-          (
-              "Conflict between the pasthrough log keys and the returned model"
-              " log keys. Found %r keys in the passthrough logs and %r keys in"
-              " the model logs. Model log keys takes precedence."
-          ),
-          logs.keys(),
-          passthrough_logs.keys(),
-      )
-
-    return {**passthrough_logs, **logs}
+    [labels_per_replica, predictions_per_replica] = self.strategy.run(step_fn, args=(inputs,))
+    return [labels_per_replica, predictions_per_replica]
 
   def eval_end(self, aggregated_logs=None):
     """Processes evaluation results."""
@@ -468,31 +448,34 @@ class Trainer(_AsyncTrainer):
     logs = {}
     for metric in self.validation_metrics:
       logs[metric.name] = metric.result()
-    if self.validation_loss.count.numpy() != 0:
-      logs[self.validation_loss.name] = self.validation_loss.result()
-    else:
-      # `self.validation_loss` metric was not updated, because the validation
-      # loss was not returned from the task's `validation_step` method.
-      logging.info("The task did not report validation loss.")
-    if aggregated_logs:
-      metrics = self.task.reduce_aggregated_logs(
-          aggregated_logs, global_step=self.global_step)
-      logs.update(metrics)
 
-    if self._checkpoint_exporter:
-      self._checkpoint_exporter.maybe_export_checkpoint(
-          self.checkpoint, logs, self.global_step.numpy())
-      metric_name = self.config.trainer.best_checkpoint_eval_metric
-      logs["best_" +
-           metric_name] = self._checkpoint_exporter.best_ckpt_logs[metric_name]
+    # def compute_roc():
+    #   self.join()
 
-    # Swaps back weights after testing when EMA is used.
-    # This happens after best checkpoint export so that average weights used for
-    # eval are exported instead of regular weights.
-    if self.optimizer and isinstance(self.optimizer,
-                                     optimization.ExponentialMovingAverage):
-      self.optimizer.swap_weights()
+    # roc_obj = roc_metrics.RocMetrics(predictions_np, targets_np)
+    # auc = roc_obj.ComputeRocAuc()
+    # tf._logging.info("chandrasekhard: roc_auc: %s", auc)
+    # return auc
+
+    # def compute_auc():
+    #   targets_np = aggregated_logs[0].numpy().astype(np.float32)
+    #   predictions_np = aggregated_logs[1].numpy().astype(np.float32)
+    #   roc_obj = roc_metrics.RocMetrics(predictions_np, targets_np)
+    #   auc = roc_obj.ComputeRocAuc()
+    #   tf._logging.info("roc_auc: %s", auc)
+
+
+    # # Start compute_auc in a new thread
+    # thread = threading.Thread(target=compute_auc)
+    # thread.start()
+
+    # # Use ThreadPoolExecutor to run ROC computation asynchronously
+    # executor = concurrent.futures.ThreadPoolExecutor()
+    # executor.submit(compute_roc)
+    # tf._logging.info(f'chandra: roc_auc: {roc_auc}')
+    # logs['chandra_auc'] = roc_auc
     return logs
 
   def eval_reduce(self, state=None, step_outputs=None):
     return self.task.aggregate_logs(state, step_outputs)
+

@@ -27,8 +27,11 @@ from official.recommendation.ranking.configs import config
 from official.recommendation.ranking.data import data_pipeline
 from official.recommendation.ranking.data import data_pipeline_multi_hot
 
-
 RuntimeConfig = config_definitions.RuntimeConfig
+
+LEARNING_RATE = 0.0034
+INITIAL_ACCUMULATOR_VALUE = 0.0
+EPS = 1e-8
 
 
 def _get_tpu_embedding_feature_config(
@@ -40,7 +43,10 @@ def _get_tpu_embedding_feature_config(
     max_ids_per_table: Optional[Union[int, List[int]]] = None,
     max_unique_ids_per_table: Optional[Union[int, List[int]]] = None,
     allow_id_dropping: bool = False,
+    disable_table_stacking: bool = False,
     initialize_tables_on_host: bool = False,
+    enable_fast_table_initialization: bool = False,
+    size_threshold: int = 10_000,
 ) -> Tuple[
     Dict[str, tf.tpu.experimental.embedding.FeatureConfig],
     Optional[tf.tpu.experimental.embedding.SparseCoreEmbeddingConfig],
@@ -55,15 +61,6 @@ def _get_tpu_embedding_feature_config(
     embedding_dim: An integer or a list of embedding table dimensions.
     table_name_prefix: a prefix for embedding tables.
     batch_size: Per-replica batch size.
-    max_ids_per_chip_per_sample: Maximum number of embedding ids per chip per
-      sample.
-    max_ids_per_table: Maximum number of embedding ids per table.
-    max_unique_ids_per_table: Maximum number of unique embedding ids per table.
-    allow_id_dropping: bool to allow id dropping.
-    initialize_tables_on_host: bool : if the embedding table size is more than 
-      what HBM can handle, this flag will help initialize the full embedding
-      tables on host and then copy shards to HBM.
-
   Returns:
     A dictionary of feature_name, FeatureConfig pairs.
   """
@@ -109,20 +106,18 @@ def _get_tpu_embedding_feature_config(
         'max_unique_ids_per_table is not either a list or an int or None, '
         f'got {type(max_unique_ids_per_table)}'
     )
-
   feature_config = {}
   sparsecore_config = None
   max_ids_per_table_dict = {}
   max_unique_ids_per_table_dict = {}
 
   for i, vocab_size in enumerate(vocab_sizes):
+    bound = tf.math.sqrt(1.0 / vocab_size)
     table_config = tf.tpu.experimental.embedding.TableConfig(
         vocabulary_size=vocab_size,
         dim=embedding_dim[i],
-        combiner='mean',
-        initializer=tf.initializers.TruncatedNormal(
-            mean=0.0, stddev=1 / math.sqrt(embedding_dim[i])
-        ),
+        combiner='sum',
+        initializer=tf.keras.initializers.RandomUniform(-bound, bound),
         name=table_name_prefix + '_%02d' % i,
     )
     feature_config[str(i)] = tf.tpu.experimental.embedding.FeatureConfig(
@@ -130,24 +125,25 @@ def _get_tpu_embedding_feature_config(
         table=table_config,
         output_shape=[batch_size] if batch_size else None,
     )
-    if max_ids_per_table:
-      max_ids_per_table_dict[str(table_name_prefix + '_%02d' % i)] = (
-          max_ids_per_table[i]
-      )
-    if max_unique_ids_per_table:
-      max_unique_ids_per_table_dict[str(table_name_prefix + '_%02d' % i)] = (
-          max_unique_ids_per_table[i]
-      )
-
+    if vocab_size > size_threshold:
+      if max_ids_per_table:
+        max_ids_per_table_dict[str(table_name_prefix + '_%02d' % i)] = (
+            max_ids_per_table[i]
+        )
+      if max_unique_ids_per_table:
+        max_unique_ids_per_table_dict[str(table_name_prefix + '_%02d' % i)] = (
+            max_unique_ids_per_table[i]
+        )
   if all((max_ids_per_chip_per_sample, max_ids_per_table,
           max_unique_ids_per_table)):
     sparsecore_config = tf.tpu.experimental.embedding.SparseCoreEmbeddingConfig(
-        disable_table_stacking=False,
+        disable_table_stacking=disable_table_stacking,
         max_ids_per_chip_per_sample=max_ids_per_chip_per_sample,
         max_ids_per_table=max_ids_per_table_dict,
         max_unique_ids_per_table=max_unique_ids_per_table_dict,
         allow_id_dropping=allow_id_dropping,
         initialize_tables_on_host=initialize_tables_on_host,
+        enable_fast_table_initialization=enable_fast_table_initialization,
     )
 
   return feature_config, sparsecore_config
@@ -187,7 +183,8 @@ class RankingTask(base_task.Task):
             params=params,
             vocab_sizes=self.task_config.model.vocab_sizes,
             multi_hot_sizes=self.task_config.model.multi_hot_sizes,
-            num_dense_features=self.task_config.model.num_dense_features)
+            num_dense_features=self.task_config.model.num_dense_features,
+            embedding_threshold=self.task_config.model.size_threshold,)
       else:
         dataset = data_pipeline_multi_hot.CriteoTsvReaderMultiHot(
             file_pattern=params.input_path,
@@ -212,7 +209,7 @@ class RankingTask(base_task.Task):
     """See base class. Return None, optimizer is set in `build_model`."""
     return None
 
-  def build_model(self) -> tf_keras.Model:
+  def build_model(self) -> tf.keras.Model:
     """Creates Ranking model architecture and Optimizers.
 
     The RankingModel uses different optimizers/learning rates for embedding
@@ -221,79 +218,57 @@ class RankingTask(base_task.Task):
     Returns:
       A Ranking model instance.
     """
-    lr_config = self.optimizer_config.lr_config
-    lr_callable = common.WarmUpAndPolyDecay(
-        batch_size=self.task_config.train_data.global_batch_size,
-        decay_exp=lr_config.decay_exp,
-        learning_rate=lr_config.learning_rate,
-        warmup_steps=lr_config.warmup_steps,
-        decay_steps=lr_config.decay_steps,
-        decay_start_steps=lr_config.decay_start_steps)
-    embedding_optimizer = tf_keras.optimizers.get(
-        self.optimizer_config.embedding_optimizer, use_legacy_optimizer=True)
-    embedding_optimizer.learning_rate = lr_callable
 
-    dense_optimizer = tf_keras.optimizers.get(
-        self.optimizer_config.dense_optimizer, use_legacy_optimizer=True)
-    if self.optimizer_config.dense_optimizer == 'SGD':
-      dense_lr_config = self.optimizer_config.dense_sgd_config
-      dense_lr_callable = common.WarmUpAndPolyDecay(
-          batch_size=self.task_config.train_data.global_batch_size,
-          decay_exp=dense_lr_config.decay_exp,
-          learning_rate=dense_lr_config.learning_rate,
-          warmup_steps=dense_lr_config.warmup_steps,
-          decay_steps=dense_lr_config.decay_steps,
-          decay_start_steps=dense_lr_config.decay_start_steps)
-      dense_optimizer.learning_rate = dense_lr_callable
 
-    feature_config, sparse_core_embedding_config = (
-        _get_tpu_embedding_feature_config(
-            embedding_dim=self.task_config.model.embedding_dim,
-            vocab_sizes=self.task_config.model.vocab_sizes,
-            batch_size=self.task_config.train_data.global_batch_size
-            // tf.distribute.get_strategy().num_replicas_in_sync,
-            max_ids_per_chip_per_sample=self.task_config.model.max_ids_per_chip_per_sample,
-            max_ids_per_table=self.task_config.model.max_ids_per_table,
-            max_unique_ids_per_table=self.task_config.model.max_unique_ids_per_table,
-            allow_id_dropping=self.task_config.model.allow_id_dropping,
-            initialize_tables_on_host=self.task_config.model.initialize_tables_on_host,
-        )
+    embedding_optimizer = tf.keras.optimizers.legacy.Adagrad(
+        learning_rate=LEARNING_RATE,
+        initial_accumulator_value=INITIAL_ACCUMULATOR_VALUE,
+        epsilon=EPS
+    )
+    dense_optimizer = tf.keras.optimizers.legacy.Adagrad(
+        learning_rate=LEARNING_RATE,
+        initial_accumulator_value=INITIAL_ACCUMULATOR_VALUE,
+        epsilon=EPS
     )
 
-    # to work around PartialTPUEmbedding issue in v5p and to enable multi hot
-    # features
-    if self.task_config.model.use_partial_tpu_embedding:
-      embedding_layer = tfrs.experimental.layers.embedding.PartialTPUEmbedding(
+    feature_config, sparsecore_config = _get_tpu_embedding_feature_config(
+        embedding_dim=self.task_config.model.embedding_dim,
+        vocab_sizes=self.task_config.model.vocab_sizes,
+        batch_size=self.task_config.train_data.global_batch_size
+        // tf.distribute.get_strategy().num_replicas_in_sync,
+        max_ids_per_chip_per_sample=self.task_config.model.max_ids_per_chip_per_sample,
+        max_ids_per_table=self.task_config.model.max_ids_per_table,
+        max_unique_ids_per_table=self.task_config.model.max_unique_ids_per_table,
+        allow_id_dropping=self.task_config.model.allow_id_dropping,
+        disable_table_stacking=self.task_config.model.disable_table_stacking,
+        initialize_tables_on_host=self.task_config.model.initialize_tables_on_host,
+        enable_fast_table_initialization=self.task_config.model.enable_fast_table_initialization,
+        size_threshold=self.task_config.model.size_threshold,
+    )
+
+    embedding_layer = tfrs.experimental.layers.embedding.PartialTPUEmbedding(
           feature_config=feature_config,
           optimizer=embedding_optimizer,
           pipeline_execution_with_tensor_core=self.trainer_config.pipeline_sparse_and_dense_execution,
           size_threshold=self.task_config.model.size_threshold,
-      )
-    else:
-      embedding_layer = tfrs.layers.embedding.tpu_embedding_layer.TPUEmbedding(
-          feature_config=feature_config,
-          optimizer=embedding_optimizer,
-          pipeline_execution_with_tensor_core=self.trainer_config.pipeline_sparse_and_dense_execution,
-          sparse_core_embedding_config=sparse_core_embedding_config,
+          multi_hot_sizes=self.task_config.model.multi_hot_sizes,
+          sparsecore_config=sparsecore_config,
       )
 
     if self.task_config.model.interaction == 'dot':
       feature_interaction = tfrs.layers.feature_interaction.DotInteraction(
           skip_gather=True)
     elif self.task_config.model.interaction == 'cross':
-      feature_interaction = tf_keras.Sequential([
-          tf_keras.layers.Concatenate(),
+      feature_interaction = tf.keras.Sequential([
+          tf.keras.layers.Concatenate(),
           tfrs.layers.feature_interaction.Cross()
       ])
     elif self.task_config.model.interaction == 'multi_layer_dcn':
-      feature_interaction = tf_keras.Sequential([
-          tf_keras.layers.Concatenate(),
+      feature_interaction = tf.keras.Sequential([
+          tf.keras.layers.Concatenate(),
           tfrs.layers.feature_interaction.MultiLayerDCN(
               projection_dim=self.task_config.model.dcn_low_rank_dim,
               num_layers=self.task_config.model.dcn_num_layers,
-              use_bias=self.task_config.model.dcn_use_bias,
-              kernel_initializer=self.task_config.model.dcn_kernel_initializer,
-              bias_initializer=self.task_config.model.dcn_bias_initializer,
           ),
       ])
     else:
@@ -309,7 +284,7 @@ class RankingTask(base_task.Task):
         ),
         feature_interaction=feature_interaction,
         top_stack=tfrs.layers.blocks.MLP(
-            units=self.task_config.model.top_mlp, final_activation='sigmoid'
+            units=self.task_config.model.top_mlp,  # final_activation='sigmoid'
         ),
         concat_dense=self.task_config.model.concat_dense,
     )
@@ -324,9 +299,9 @@ class RankingTask(base_task.Task):
   def train_step(
       self,
       inputs: Dict[str, tf.Tensor],
-      model: tf_keras.Model,
-      optimizer: tf_keras.optimizers.Optimizer,
-      metrics: Optional[List[tf_keras.metrics.Metric]] = None) -> tf.Tensor:
+      model: tf.keras.Model,
+      optimizer: tf.keras.optimizers.Optimizer,
+      metrics: Optional[List[tf.keras.metrics.Metric]] = None) -> tf.Tensor:
     """See base class."""
     # All metrics need to be passed through the RankingModel.
     assert metrics == model.metrics
@@ -335,8 +310,8 @@ class RankingTask(base_task.Task):
   def validation_step(
       self,
       inputs: Dict[str, tf.Tensor],
-      model: tf_keras.Model,
-      metrics: Optional[List[tf_keras.metrics.Metric]] = None) -> tf.Tensor:
+      model: tf.keras.Model,
+      metrics: Optional[List[tf.keras.metrics.Metric]] = None) -> tf.Tensor:
     """See base class."""
     # All metrics need to be passed through the RankingModel.
     assert metrics == model.metrics
@@ -349,3 +324,4 @@ class RankingTask(base_task.Task):
   @property
   def optimizer_config(self) -> config.OptimizationConfig:
     return self._optimizer_config
+

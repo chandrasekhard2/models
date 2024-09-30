@@ -176,6 +176,8 @@ def create_tf_while_loop_fn_with_state(step_fn):
       return tf.nest.pack_sequence_as(
           state, [_get_relaxed_tensor_shape(t) for t in tf.nest.flatten(s)])
 
+    labels_array = tf.TensorArray(dtype=tf.int64, size=num_steps)
+    predictions_array = tf.TensorArray(dtype=tf.bfloat16, size=num_steps)
     for _ in tf.range(num_steps):
       # Clear out the outer name scope so the ops created inside `tf.while_loop`
       # don't get "while/" as name prefix.
@@ -183,11 +185,29 @@ def create_tf_while_loop_fn_with_state(step_fn):
         # Relax the shapes within the loop, so the shape of `state` can change
         # across iterations. This is useful to aggregate outputs from each step
         # and concat to `state`.
-        tf.autograph.experimental.set_loop_options(
-            shape_invariants=[(state, _get_relaxed_shape_structure(state))])
-        outputs = step_fn(iterator)
-        state = reduce_fn(state, outputs)
-    return state
+        tf.where(
+            _ == 0,
+            tf.autograph.experimental.set_loop_options(
+                shape_invariants=[
+                    (labels_array, tf.TensorShape((None))),
+                    (predictions_array, tf.TensorShape((None))),
+                ]
+            ),
+            tf.autograph.experimental.set_loop_options(
+                shape_invariants=[
+                    (labels_array, tf.TensorShape([None, 64, 2112])),
+                    (predictions_array, tf.TensorShape([None, 64, 2112])),
+                ]
+            ),
+        )
+        [labels_per_replica, predictions_per_replica] = step_fn(iterator)
+        labels = tf.distribute.get_strategy().gather(labels_per_replica, axis=0)
+        predictions = tf.distribute.get_strategy().gather(
+            predictions_per_replica, axis=0
+        )
+        labels_array = labels_array.write(_, labels)
+        predictions_array = predictions_array.write(_, predictions)
+    return [labels_array.stack(), predictions_array.stack()]
 
   return loop_fn_with_state
 
@@ -205,3 +225,4 @@ class LoopFnWithSummaries(tpu_summaries.OptionalSummariesFunction):
     if num_steps >= 1:
       output = self.without_summaries(iterator, num_steps)
     return output
+

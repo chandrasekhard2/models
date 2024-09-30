@@ -320,33 +320,31 @@ class Controller:
     current_step = self.global_step.numpy()
     _log(f" eval | step: {current_step: 6d} | {steps_msg}")
 
-    start = time.time()
+    # start = time.time()
     assert isinstance(self.evaluator, runner.AbstractEvaluator)
     with self.eval_summary_manager.summary_writer().as_default():
       steps_tensor = tf.convert_to_tensor(steps, dtype=tf.int32)
       eval_output = self.evaluator.evaluate(steps_tensor)
-    elapsed = time.time() - start
+    # elapsed = time.time() - start
 
-    eval_output = eval_output or {}
-    for action in self.eval_actions:
-      action(eval_output)
-    eval_output = tf.nest.map_structure(utils.get_value, eval_output)
+    # eval_output = eval_output or {}
+    # for action in self.eval_actions:
+    #   action(eval_output)
+    # eval_output = tf.nest.map_structure(utils.get_value, eval_output)
 
-    if steps > 0:
-      # Only log if steps has been specified.
-      steps_per_second = steps / elapsed
-      eval_output["steps_per_second"] = steps_per_second
-      steps_per_second_log = f"steps/sec: {steps_per_second: 6.1f} | "
-    else:
-      steps_per_second_log = ""
+    # if steps > 0:
+    #   # Only log if steps has been specified.
+    #   steps_per_second = steps / elapsed
+    #   eval_output["steps_per_second"] = steps_per_second
+    #   steps_per_second_log = f"steps/sec: {steps_per_second: 6.1f} | "
+    # else:
+    #   steps_per_second_log = ""
 
     _log(f" eval | step: {current_step: 6d} | "
-         f"{steps_per_second_log}"
-         f"eval time: {elapsed: 6.1f} sec | "
          f"output: {_format_output(eval_output)}")
 
-    self.eval_summary_manager.write_summaries(eval_output)
-    self.eval_summary_manager.flush()
+    # self.eval_summary_manager.write_summaries(eval_output)
+    # self.eval_summary_manager.flush()
 
     return eval_output
 
@@ -392,6 +390,8 @@ class Controller:
       num_steps = current_step + interval
       self.train(steps=num_steps, checkpoint_at_completion=False)
       output = self.evaluate(steps=eval_steps)
+      if output['mauc'] > 0.80275:
+        return
       current_step = self.global_step.numpy()
     self._maybe_save_checkpoint(check_interval=False)
     self._sync_on_async_checkpointing()
@@ -504,7 +504,6 @@ class Controller:
     """
     if not self.step_timer:
       self.step_timer = StepTimer(self.global_step)
-    current_step = self.global_step.numpy()
 
     with self.summary_manager.summary_writer().as_default():
       should_record = False  # Allows static optimization in no-summary cases.
@@ -514,31 +513,7 @@ class Controller:
       assert isinstance(self.trainer, runner.AbstractTrainer)
       with tf.summary.record_if(should_record):
         num_steps_tensor = tf.convert_to_tensor(num_steps, dtype=tf.int32)
-        train_output = self.trainer.train(num_steps_tensor)
-
-    # Verify that global_step was updated properly, then update current_step.
-    expected_step = current_step + num_steps
-    if self.global_step.numpy() != expected_step:
-      message = (
-          f"`trainer.train({num_steps})` did not update `global_step` by "
-          f"{num_steps}. Old value was {current_step}, expected updated value "
-          f"to be {expected_step}, but it was {self.global_step.numpy()}.")
-      logging.warning(message)
-
-    train_output = train_output or {}
-    for action in self.train_actions:
-      action(train_output)
-    train_output = tf.nest.map_structure(utils.get_value, train_output)
-
-    current_step = self.global_step.numpy()
-    steps_per_second = self.step_timer.steps_per_second()
-    _log(f"train | step: {current_step: 6d} | "
-         f"steps/sec: {steps_per_second: 6.1f} | "
-         f"output: {_format_output(train_output)}")
-
-    train_output["steps_per_second"] = steps_per_second
-    self.summary_manager.write_summaries(train_output)
-    self.summary_manager.flush()
+        self.trainer.train(num_steps_tensor)
 
   def _maybe_save_checkpoint(self, check_interval: bool = True):
     """Conditionally saves a checkpoint.
@@ -598,3 +573,4 @@ class StepTimer:
     if restart:
       self.start()
     return value
+

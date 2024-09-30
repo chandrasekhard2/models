@@ -32,7 +32,6 @@ from official.utils.misc import keras_utils
 
 FLAGS = flags.FLAGS
 
-
 class RankingTrainer(base_trainer.Trainer):
   """A trainer for Ranking Model.
 
@@ -61,6 +60,7 @@ def main(_) -> None:
   """Train and evaluate the Ranking model."""
   params = train_utils.parse_configuration(FLAGS)
   mode = FLAGS.mode
+  tf.keras.mixed_precision.set_global_policy('mixed_bfloat16')
   model_dir = FLAGS.model_dir
   if 'train' in FLAGS.mode:
     # Pure eval modes do not output yaml files. Otherwise continuous eval job
@@ -150,7 +150,7 @@ def main(_) -> None:
     callbacks = [checkpoint_callback, time_callback]
 
     if enable_tensorboard:
-      tensorboard_callback = tf_keras.callbacks.TensorBoard(
+      tensorboard_callback = tf.keras.callbacks.TensorBoard(
           log_dir=model_dir,
           update_freq=min(1000, params.trainer.validation_interval),
           profile_batch=FLAGS.profile_steps)
@@ -188,3 +188,4 @@ if __name__ == '__main__':
   logging.set_verbosity(logging.INFO)
   common.define_flags()
   app.run(main)
+

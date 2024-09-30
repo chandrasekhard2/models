@@ -135,7 +135,7 @@ class StandardTrainer(runner.AbstractTrainer, metaclass=abc.ABCMeta):
     Returns:
       The output of `train_loop_end`.
     """
-    self.train_loop_begin()
+    # self.train_loop_begin()
 
     if self._train_loop_fn is None:
       self._train_loop_fn = self.create_train_loop_fn()
@@ -144,7 +144,7 @@ class StandardTrainer(runner.AbstractTrainer, metaclass=abc.ABCMeta):
       self._train_iter = tf.nest.map_structure(iter, self.train_dataset)
 
     self._train_loop_fn(self._train_iter, num_steps)
-    return self.train_loop_end()
+    # return self.train_loop_end()
 
   def train_loop_begin(self):
     """Called once at the beginning of the training loop.
@@ -232,7 +232,7 @@ class StandardEvaluatorOptions:
   """
   use_tf_function: bool = True
   use_tf_while_loop: bool = False
-  recreate_iterator_for_each_eval: bool = True
+  recreate_iterator_for_each_eval: bool = False
 
 
 class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
@@ -326,7 +326,8 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
                        "`options.use_tf_while_loop` is `True`")
 
     outputs = self.eval_begin()  # pylint: disable=assignment-from-no-return
-
+    # outputs = [tf.zeros([0, 2112,], dtype=tf.int64),
+    #           tf.zeros([0 ,2112,], dtype=tf.bfloat16)]
     has_state = outputs is not None
     if self._eval_loop_fn is None:
       self._eval_loop_fn = self.create_eval_loop_fn(has_state)
@@ -448,3 +449,4 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
     """
     self._eval_dataset = eval_dataset
     self._eval_iter = None
+
