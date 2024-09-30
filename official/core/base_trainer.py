@@ -448,7 +448,7 @@ class Trainer(_AsyncTrainer):
     logs = {}
     for metric in self.validation_metrics:
       logs[metric.name] = metric.result()
-      metric.reset_states()
+      #metric.reset_states()
 
     # def compute_roc():
     #   self.join()
