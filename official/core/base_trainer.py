@@ -215,8 +215,9 @@ class Trainer(_AsyncTrainer):
     self.init_async()
 
     if train:
-      self._train_metrics = self.task.build_metrics(
-          training=True) + model_metrics
+      #self._train_metrics = self.task.build_metrics(
+      #    training=True) + model_metrics
+      self._train_metrics = None
       train_dataset = train_dataset or self.distribute_dataset(
           self.task.build_inputs, self.config.task.train_data)
       orbit.StandardTrainer.__init__(
@@ -448,7 +449,7 @@ class Trainer(_AsyncTrainer):
     logs = {}
     for metric in self.validation_metrics:
       logs[metric.name] = metric.result()
-      #metric.reset_states()
+      metric.reset_states()
 
     # def compute_roc():
     #   self.join()
