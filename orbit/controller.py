@@ -280,13 +280,8 @@ class Controller:
       # Calculates steps to run for the next train loop.
       num_steps = min(steps - current_step, self.steps_per_loop)
       self._train_n_steps(num_steps)
-      self._maybe_save_checkpoint()
       current_step = self.global_step.numpy()
 
-    if checkpoint_at_completion:
-      self._maybe_save_checkpoint(check_interval=False)
-
-    self._sync_on_async_checkpointing()
 
   def evaluate(self, steps: int = -1) -> Optional[runner.Output]:
     """Runs evaluation for the given number of steps.
@@ -393,8 +388,6 @@ class Controller:
       if output['mauc'] > 0.80275:
         return
       current_step = self.global_step.numpy()
-    self._maybe_save_checkpoint(check_interval=False)
-    self._sync_on_async_checkpointing()
     return output
 
   def evaluate_continuously(
