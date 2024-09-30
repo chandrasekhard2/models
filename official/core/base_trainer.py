@@ -215,9 +215,8 @@ class Trainer(_AsyncTrainer):
     self.init_async()
 
     if train:
-      #self._train_metrics = self.task.build_metrics(
-      #    training=True) + model_metrics
-      self._train_metrics = None
+      self._train_metrics = self.task.build_metrics(
+          training=True) + model_metrics
       train_dataset = train_dataset or self.distribute_dataset(
           self.task.build_inputs, self.config.task.train_data)
       orbit.StandardTrainer.__init__(
