@@ -222,7 +222,7 @@ class RankingTask(base_task.Task):
 
     embedding_optimizer = tf.keras.optimizers.legacy.Adagrad(
         learning_rate=LEARNING_RATE,
-        initial_accumulator_value=INITIAL_ACCUMULATOR_VALUE,
+        initial_accumulator_value=1e-16,
         epsilon=EPS
     )
     dense_optimizer = tf.keras.optimizers.legacy.Adagrad(
