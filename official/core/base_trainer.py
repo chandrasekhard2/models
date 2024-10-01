@@ -32,7 +32,6 @@ from official.modeling import optimization
 ExperimentConfig = config_definitions.ExperimentConfig
 TrainerConfig = config_definitions.TrainerConfig
 
-
 class _AsyncTrainer(orbit.StandardTrainer, orbit.StandardEvaluator):
   """Trainer class for both sync and async Strategy."""
 
@@ -388,13 +387,11 @@ class Trainer(_AsyncTrainer):
         task_train_step = tf.function(self.task.train_step, jit_compile=True)
       else:
         task_train_step = self.task.train_step
-        task_train_step(
-            inputs,
-            model=self.model,
-            optimizer=self.optimizer,
-            metrics=self.train_metrics,
-        )
-      # self._train_loss.update_state(logs[self.task.loss])
+      task_train_step(
+          inputs,
+          model=self.model,
+          optimizer=self.optimizer,
+          metrics=self.train_metrics)
       self.global_step.assign_add(1)
 
     inputs = self.next_train_inputs(iterator)
@@ -432,15 +429,19 @@ class Trainer(_AsyncTrainer):
 
   def eval_step(self, iterator):
     """See base class."""
+
     def step_fn(inputs):
-      [label, prediction] = self.task.validation_step(
+      labels, predictions = self.task.validation_step(
           inputs, model=self.model, metrics=self.validation_metrics)
-      label = tf.expand_dims(label, axis=0)
-      prediction = tf.expand_dims(prediction, axis=0)
-      return [label, prediction]
+      return labels, predictions
+
     inputs, passthrough_logs = self.next_eval_inputs(iterator)
-    [labels_per_replica, predictions_per_replica] = self.strategy.run(step_fn, args=(inputs,))
-    return [labels_per_replica, predictions_per_replica]
+    distributed_labels, distributed_predictions = self.strategy.run(step_fn, args=(inputs,))
+    #logs = tf.nest.map_structure(
+    #    self.strategy.experimental_local_results, distributed_outputs
+    #)
+
+    return distributed_labels, distributed_predictions
 
   def eval_end(self, aggregated_logs=None):
     """Processes evaluation results."""
@@ -449,34 +450,33 @@ class Trainer(_AsyncTrainer):
     for metric in self.validation_metrics:
       logs[metric.name] = metric.result()
       metric.reset_states()
+    '''
+    if self.validation_loss.count.numpy() != 0:
+      logs[self.validation_loss.name] = self.validation_loss.result()
+    else:
+      # `self.validation_loss` metric was not updated, because the validation
+      # loss was not returned from the task's `validation_step` method.
+      logging.info("The task did not report validation loss.")
+    if aggregated_logs:
+      metrics = self.task.reduce_aggregated_logs(
+          aggregated_logs, global_step=self.global_step)
+      logs.update(metrics)
 
-    # def compute_roc():
-    #   self.join()
+    if self._checkpoint_exporter:
+      self._checkpoint_exporter.maybe_export_checkpoint(
+          self.checkpoint, logs, self.global_step.numpy())
+      metric_name = self.config.trainer.best_checkpoint_eval_metric
+      logs["best_" +
+           metric_name] = self._checkpoint_exporter.best_ckpt_logs[metric_name]
 
-    # roc_obj = roc_metrics.RocMetrics(predictions_np, targets_np)
-    # auc = roc_obj.ComputeRocAuc()
-    # tf._logging.info("chandrasekhard: roc_auc: %s", auc)
-    # return auc
-
-    # def compute_auc():
-    #   targets_np = aggregated_logs[0].numpy().astype(np.float32)
-    #   predictions_np = aggregated_logs[1].numpy().astype(np.float32)
-    #   roc_obj = roc_metrics.RocMetrics(predictions_np, targets_np)
-    #   auc = roc_obj.ComputeRocAuc()
-    #   tf._logging.info("roc_auc: %s", auc)
-
-
-    # # Start compute_auc in a new thread
-    # thread = threading.Thread(target=compute_auc)
-    # thread.start()
-
-    # # Use ThreadPoolExecutor to run ROC computation asynchronously
-    # executor = concurrent.futures.ThreadPoolExecutor()
-    # executor.submit(compute_roc)
-    # tf._logging.info(f'chandra: roc_auc: {roc_auc}')
-    # logs['chandra_auc'] = roc_auc
+    # Swaps back weights after testing when EMA is used.
+    # This happens after best checkpoint export so that average weights used for
+    # eval are exported instead of regular weights.
+    if self.optimizer and isinstance(self.optimizer,
+                                     optimization.ExponentialMovingAverage):
+      self.optimizer.swap_weights()
+    '''
     return logs
 
   def eval_reduce(self, state=None, step_outputs=None):
     return self.task.aggregate_logs(state, step_outputs)
-

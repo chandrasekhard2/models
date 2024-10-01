@@ -135,7 +135,8 @@ class StandardTrainer(runner.AbstractTrainer, metaclass=abc.ABCMeta):
     Returns:
       The output of `train_loop_end`.
     """
-    self.train_loop_begin()
+    #self.train_loop_begin()
+    #for metric in self.
 
     if self._train_loop_fn is None:
       self._train_loop_fn = self.create_train_loop_fn()
@@ -144,7 +145,7 @@ class StandardTrainer(runner.AbstractTrainer, metaclass=abc.ABCMeta):
       self._train_iter = tf.nest.map_structure(iter, self.train_dataset)
 
     self._train_loop_fn(self._train_iter, num_steps)
-    return self.train_loop_end()
+    #return self.train_loop_end()
 
   def train_loop_begin(self):
     """Called once at the beginning of the training loop.
@@ -325,9 +326,11 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
       raise ValueError("Looping until exhausted is not supported if "
                        "`options.use_tf_while_loop` is `True`")
 
-    #outputs = self.eval_begin()  # pylint: disable=assignment-from-no-return
-    outputs = [tf.zeros([0, 2112,], dtype=tf.int64),
-               tf.zeros([0 ,2112,], dtype=tf.bfloat16)]
+    # outputs = self.eval_begin()  # pylint: disable=assignment-from-no-return
+    # outputs = [tf.zeros([0, 2112,], dtype=tf.int64),
+    #           tf.zeros([0 ,2112,], dtype=tf.bfloat16)]
+   
+    outputs = tf.zeros([0, 2112,], dtype=tf.int64)
     has_state = outputs is not None
     if self._eval_loop_fn is None:
       self._eval_loop_fn = self.create_eval_loop_fn(has_state)
@@ -344,13 +347,13 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
     if self._eval_options.use_tf_while_loop and not has_state:
       self._eval_loop_fn(eval_iter, num_steps)
     else:
-      outputs = self._eval_loop_fn(
+      labels, predictions = self._eval_loop_fn(
           eval_iter, num_steps, state=outputs, reduce_fn=self.eval_reduce)
 
     if outputs is None:
       return self.eval_end()
     else:
-      return self.eval_end(outputs)
+      return self.eval_end([labels, predictions])
 
   def eval_begin(self) -> Any:
     """Called once at the beginning of the evaluation.
@@ -449,4 +452,3 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
     """
     self._eval_dataset = eval_dataset
     self._eval_iter = None
-

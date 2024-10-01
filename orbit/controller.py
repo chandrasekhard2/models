@@ -56,7 +56,6 @@ def _format_output(output, indent=4):
 
 Action = Callable[[runner.Output], None]
 
-
 class Controller:
   """Class that controls the outer loop of model training and evaluation.
 
@@ -214,7 +213,7 @@ class Controller:
     self.eval_actions = () if eval_actions is None else tuple(eval_actions)
 
     self.global_step = global_step
-    self.checkpoint_manager = checkpoint_manager
+    self.checkpoint_manager = None # checkpoint_manager
     self._enable_async_checkpoint_saving = enable_async_checkpointing
     self._checkpoint_options = tf.train.CheckpointOptions(
         enable_async=enable_async_checkpointing
@@ -280,8 +279,13 @@ class Controller:
       # Calculates steps to run for the next train loop.
       num_steps = min(steps - current_step, self.steps_per_loop)
       self._train_n_steps(num_steps)
+      self._maybe_save_checkpoint()
       current_step = self.global_step.numpy()
 
+    if checkpoint_at_completion:
+      self._maybe_save_checkpoint(check_interval=False)
+
+    self._sync_on_async_checkpointing()
 
   def evaluate(self, steps: int = -1) -> Optional[runner.Output]:
     """Runs evaluation for the given number of steps.
@@ -305,41 +309,24 @@ class Controller:
     """
     self._require("evaluator", for_method="evaluate")
 
-    if steps > 0:
-      steps_msg = f"running {steps} steps of evaluation..."
-    elif steps == -1:
-      steps_msg = "running complete evaluation..."
-    else:
-      raise ValueError(f"`steps` ({steps}) should be > 0, or == -1.")
+    
 
     current_step = self.global_step.numpy()
-    _log(f" eval | step: {current_step: 6d} | {steps_msg}")
+    _log(f" eval | step: {current_step: 6d} ")
 
-    # start = time.time()
     assert isinstance(self.evaluator, runner.AbstractEvaluator)
     with self.eval_summary_manager.summary_writer().as_default():
       steps_tensor = tf.convert_to_tensor(steps, dtype=tf.int32)
       eval_output = self.evaluator.evaluate(steps_tensor)
-    # elapsed = time.time() - start
 
-    # eval_output = eval_output or {}
-    # for action in self.eval_actions:
-    #   action(eval_output)
-    # eval_output = tf.nest.map_structure(utils.get_value, eval_output)
+    #eval_output = eval_output or {}
+    #for action in self.eval_actions:
+    #  action(eval_output)
+    #eval_output = tf.nest.map_structure(utils.get_value, eval_output)
 
-    # if steps > 0:
-    #   # Only log if steps has been specified.
-    #   steps_per_second = steps / elapsed
-    #   eval_output["steps_per_second"] = steps_per_second
-    #   steps_per_second_log = f"steps/sec: {steps_per_second: 6.1f} | "
-    # else:
-    #   steps_per_second_log = ""
 
     _log(f" eval | step: {current_step: 6d} | "
          f"output: {_format_output(eval_output)}")
-
-    # self.eval_summary_manager.write_summaries(eval_output)
-    # self.eval_summary_manager.flush()
 
     return eval_output
 
@@ -385,8 +372,6 @@ class Controller:
       num_steps = current_step + interval
       self.train(steps=num_steps, checkpoint_at_completion=False)
       output = self.evaluate(steps=eval_steps)
-      if output['mauc'] > 0.80275:
-        return
       current_step = self.global_step.numpy()
     return output
 
@@ -497,6 +482,7 @@ class Controller:
     """
     if not self.step_timer:
       self.step_timer = StepTimer(self.global_step)
+    current_step = self.global_step.numpy()
 
     with self.summary_manager.summary_writer().as_default():
       should_record = False  # Allows static optimization in no-summary cases.
@@ -506,8 +492,9 @@ class Controller:
       assert isinstance(self.trainer, runner.AbstractTrainer)
       with tf.summary.record_if(should_record):
         num_steps_tensor = tf.convert_to_tensor(num_steps, dtype=tf.int32)
-        train_output = self.trainer.train(num_steps_tensor)
-      logging.info(f'train_output: {train_output}')
+        self.trainer.train(num_steps_tensor)
+
+    
 
   def _maybe_save_checkpoint(self, check_interval: bool = True):
     """Conditionally saves a checkpoint.
@@ -567,4 +554,3 @@ class StepTimer:
     if restart:
       self.start()
     return value
-
