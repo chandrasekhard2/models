@@ -506,7 +506,8 @@ class Controller:
       assert isinstance(self.trainer, runner.AbstractTrainer)
       with tf.summary.record_if(should_record):
         num_steps_tensor = tf.convert_to_tensor(num_steps, dtype=tf.int32)
-        self.trainer.train(num_steps_tensor)
+        train_output = self.trainer.train(num_steps_tensor)
+      logging.info(f'train_output: {train_output}')
 
   def _maybe_save_checkpoint(self, check_interval: bool = True):
     """Conditionally saves a checkpoint.
