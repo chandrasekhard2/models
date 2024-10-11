@@ -45,38 +45,6 @@ AUC_THRESHOLD = 0.8275
 
 cpp_auc = fast_auc.CppAuc()
 
-sparse_tensors_info = {
-    '0': {'dtype': tf.int64, 'dense_shape': [None, 3]},
-    '1': {'dtype': tf.int64, 'dense_shape': [None, 2]},
-    '9': {'dtype': tf.int64, 'dense_shape': [None, 7]},
-    '10': {'dtype': tf.int64, 'dense_shape': [None, 3]},
-    '11': {'dtype': tf.int64, 'dense_shape': [None, 8]},
-    '19': {'dtype': tf.int64, 'dense_shape': [None, 12]},
-    '20': {'dtype': tf.int64, 'dense_shape': [None, 100]},
-    '21': {'dtype': tf.int64, 'dense_shape': [None, 27]},
-    '22': {'dtype': tf.int64, 'dense_shape': [None, 10]},
-}
-
-# For Dense Tensors
-dense_tensors_info = {
-    '2': {'dtype': tf.int64, 'shape': [None, 1]},
-    '3': {'dtype': tf.int64, 'shape': [None, 2]},
-    '4': {'dtype': tf.int64, 'shape': [None, 6]},
-    '5': {'dtype': tf.int64, 'shape': [None, 1]},
-    '6': {'dtype': tf.int64, 'shape': [None, 1]},
-    '7': {'dtype': tf.int64, 'shape': [None, 1]},
-    '8': {'dtype': tf.int64, 'shape': [None, 1]},
-    '12': {'dtype': tf.int64, 'shape': [None, 1]},
-    '13': {'dtype': tf.int64, 'shape': [None, 6]},
-    '14': {'dtype': tf.int64, 'shape': [None, 9]},
-    '15': {'dtype': tf.int64, 'shape': [None, 5]},
-    '16': {'dtype': tf.int64, 'shape': [None, 1]},
-    '17': {'dtype': tf.int64, 'shape': [None, 1]},
-    '18': {'dtype': tf.int64, 'shape': [None, 1]},
-    '23': {'dtype': tf.int64, 'shape': [None, 3]},
-    '24': {'dtype': tf.int64, 'shape': [None, 1]},
-    '25': {'dtype': tf.int64, 'shape': [None, 1]},
-}
 
 def generate_dummy_data(batch_size):
     data = {}
@@ -100,7 +68,39 @@ def generate_dummy_data(batch_size):
     sparse_features = {}
 
     # Define the shapes and types for each feature
-    
+    # For SparseTensors
+    sparse_tensors_info = {
+        '0': {'dtype': tf.int64, 'dense_shape': [batch_size, 3]},
+        '1': {'dtype': tf.int64, 'dense_shape': [batch_size, 2]},
+        '9': {'dtype': tf.int64, 'dense_shape': [batch_size, 7]},
+        '10': {'dtype': tf.int64, 'dense_shape': [batch_size, 3]},
+        '11': {'dtype': tf.int64, 'dense_shape': [batch_size, 8]},
+        '19': {'dtype': tf.int64, 'dense_shape': [batch_size, 12]},
+        '20': {'dtype': tf.int64, 'dense_shape': [batch_size, 100]},
+        '21': {'dtype': tf.int64, 'dense_shape': [batch_size, 27]},
+        '22': {'dtype': tf.int64, 'dense_shape': [batch_size, 10]},
+    }
+
+    # For Dense Tensors
+    dense_tensors_info = {
+        '2': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '3': {'dtype': tf.int64, 'shape': (batch_size, 2)},
+        '4': {'dtype': tf.int64, 'shape': (batch_size, 6)},
+        '5': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '6': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '7': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '8': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '12': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '13': {'dtype': tf.int64, 'shape': (batch_size, 6)},
+        '14': {'dtype': tf.int64, 'shape': (batch_size, 9)},
+        '15': {'dtype': tf.int64, 'shape': (batch_size, 5)},
+        '16': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '17': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '18': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '23': {'dtype': tf.int64, 'shape': (batch_size, 3)},
+        '24': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+        '25': {'dtype': tf.int64, 'shape': (batch_size, 1)},
+    }
 
     # Create SparseTensors with random indices and values
     for key, info in sparse_tensors_info.items():
@@ -140,33 +140,6 @@ def generate_dummy_data(batch_size):
     data['sparse_features'] = sparse_features
     return data
 
-def data_generator(batch_size):
-    while True:
-        yield generate_dummy_data(batch_size)
-
-def get_output_signature():
-    # Output signature for 'clicked' and 'dense_features'
-    output_signature = {
-        'clicked': tf.TensorSpec(shape=(None,), dtype=tf.int64),
-        'dense_features': tf.TensorSpec(shape=(None, 13), dtype=tf.float32),
-        'sparse_features': {}
-    }
-
-    # Output signature for sparse features
-    for key, info in sparse_tensors_info.items():
-        output_signature['sparse_features'][key] = tf.SparseTensorSpec(
-            shape=[None, info['dense_shape'][1]],
-            dtype=info['dtype']
-        )
-
-    # Output signature for dense tensors in sparse_features
-    for key, info in dense_tensors_info.items():
-        output_signature['sparse_features'][key] = tf.TensorSpec(
-            shape=[None] + info['shape'][1:],
-            dtype=info['dtype']
-        )
-
-    return output_signature
 
 class RankingTrainer(base_trainer.Trainer):
   """A trainer for Ranking Model.
@@ -185,21 +158,19 @@ class RankingTrainer(base_trainer.Trainer):
     self._start_time = perf_counter()
     self._total_time = -1.0
     self._throughput = -1.0
-    self._run_start = False
+    #self.train_loop_begin()
     
 
   def train_loop_begin(self):
-    self.join()
-    if self._run_start == False:
-      self.mllogger.start(
-        key=mllog_constants.EPOCH_START,
-        metadata={mllog_constants.EPOCH_NUM: self.epoch_num},
-      )
-      self.run_start = True
-      self.mllogger.start(
-           key=mllog_constants.RUN_START,
-           metadata={mllog_constants.EPOCH_NUM: self.epoch_num},
-        )
+    #self.join()
+    self.mllogger.start(
+      key=mllog_constants.EPOCH_START,
+      metadata={mllog_constants.EPOCH_NUM: self.epoch_num},
+    )
+    self.mllogger.start(
+       key=mllog_constants.RUN_START,
+       metadata={mllog_constants.EPOCH_NUM: self.epoch_num},
+    )
 
   @property
   def epoch_num(self) -> float:
@@ -240,7 +211,7 @@ class RankingTrainer(base_trainer.Trainer):
 
 
   def run_stop(self):
-    self.join()
+    #self.join()
     self.mllogger.end(
         key=mllog_constants.RUN_STOP,
         metadata={
@@ -384,29 +355,7 @@ def main(_) -> None:
       trainer.initialize()
 
     
-    for i in trainer.model.optimizer.optimizers:
-      i.learning_rate = 0.0
-    print('dummy train step started')
-    with strategy.scope():
-      #@tf.function
-      def train_loop(dataset_iterator):
-          trainer.train_step(dataset_iterator)
-          print('dunny train done')
-          trainer.eval_step(dataset_iterator)
-
-      #inputs = generate_dummy_data(2112)
-      dataset = tf.data.Dataset.from_generator(
-                    data_generator,
-                    output_signature=get_output_signature()
-                )
-      #print(inputs)
-      dataset = dataset.repeat()
-      dataset_iterator =  tf.nest.map_structure(iter, dataset)
-      train_loop(dataset_iterator)
-
-    print('dummy train finished')
-    for i in trainer.model.optimizer.optimizers:
-      i.learning_rate = 0.0034
+    
 
     train_lib.run_experiment(
         distribution_strategy=strategy,
