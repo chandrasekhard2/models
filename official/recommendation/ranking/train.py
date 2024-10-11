@@ -26,7 +26,6 @@ import numpy as np
 from time import perf_counter
 import mllog_utils
 import tensorflow as tf, tf_keras
-from sklearn import metrics
 from official.common import distribute_utils
 from official.core import base_trainer
 from official.core import train_lib
@@ -35,10 +34,18 @@ from official.recommendation.ranking import common
 from official.recommendation.ranking.task import RankingTask
 from official.utils.misc import keras_utils
 import threading
+
+import sys
+import os
+sys.path.append(os.path.expanduser('~/fastauc/fastauc/'))
+import fast_auc
+
 FLAGS = flags.FLAGS
 
 
 AUC_THRESHOLD = 0.8275
+
+cpp_auc = fast_auc.CppAuc()
 
 sparse_tensors_info = {
     '0': {'dtype': tf.int64, 'dense_shape': [None, 3]},
@@ -251,8 +258,9 @@ class RankingTrainer(base_trainer.Trainer):
   
   def calculate_roc_async(self, outputs):
     """Calculate ROC metrics in a separate thread."""
+    x = perf_counter()
     outputs_np = outputs.numpy()
-
+    logging.info(f'numpy conversion took: {perf_counter() - x} seconds')
     labels_np = outputs_np[:, 0::2, :]
     predictions_np = outputs_np[:, 1::2, :]
     
@@ -263,7 +271,9 @@ class RankingTrainer(base_trainer.Trainer):
     predictions_np = predictions_np[mask]
     if self._stop_training:
         return
-    auc = metrics.roc_auc_score(labels_np, predictions_np)
+    x = perf_counter()
+    auc = cpp_auc.roc_auc_score(labels_np.astype(np.bool), predictions_np.astype(np.float32))
+    logging.info(f' auc calculation took: {perf_counter() - x} seconds')
     self.mllogger.end(
       key=mllog_constants.EVAL_ACCURACY,
       value=auc,
