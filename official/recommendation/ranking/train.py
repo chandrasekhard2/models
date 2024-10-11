@@ -27,6 +27,10 @@ from time import perf_counter
 import mllog_utils
 import tensorflow as tf, tf_keras
 from official.common import distribute_utils
+import sys
+import os
+sys.path.append(os.path.expanduser('~/fastauc/fastauc/'))
+import fast_auc
 from official.core import base_trainer
 from official.core import train_lib
 from official.core import train_utils
@@ -34,12 +38,6 @@ from official.recommendation.ranking import common
 from official.recommendation.ranking.task import RankingTask
 from official.utils.misc import keras_utils
 import threading
-
-import sys
-import os
-sys.path.append(os.path.expanduser('~/fastauc/fastauc/'))
-import fast_auc
-
 FLAGS = flags.FLAGS
 
 
@@ -187,16 +185,17 @@ class RankingTrainer(base_trainer.Trainer):
     self._start_time = perf_counter()
     self._total_time = -1.0
     self._throughput = -1.0
+    self._run_start = False
     
 
   def train_loop_begin(self):
     self.join()
-    if self.epoch_num == 0.:
+    if self._run_start == False:
       self.mllogger.start(
         key=mllog_constants.EPOCH_START,
         metadata={mllog_constants.EPOCH_NUM: self.epoch_num},
       )
-    else:
+      self.run_start = True
       self.mllogger.start(
            key=mllog_constants.RUN_START,
            metadata={mllog_constants.EPOCH_NUM: self.epoch_num},
@@ -259,6 +258,7 @@ class RankingTrainer(base_trainer.Trainer):
   def calculate_roc_async(self, outputs):
     """Calculate ROC metrics in a separate thread."""
     outputs_np = outputs.numpy()
+
     labels_np = outputs_np[:, 0::2, :]
     predictions_np = outputs_np[:, 1::2, :]
     
@@ -269,7 +269,7 @@ class RankingTrainer(base_trainer.Trainer):
     predictions_np = predictions_np[mask]
     if self._stop_training:
         return
-    auc = cpp_auc.roc_auc_score(labels_np.astype(np.bool), predictions_np.astype(np.float32))
+    auc = cpp_auc.roc_auc_score(labels_np.astype(np.bool),predictions_np.astype(np.float32)) 
     self.mllogger.end(
       key=mllog_constants.EVAL_ACCURACY,
       value=auc,
@@ -349,9 +349,9 @@ def main(_) -> None:
 
   #dummy input fn
 
-  #step_fn = tf.function(model.train_step)
-  '''
-  print('started dummy train step')
+  # feeding one dummy input to materialize the sparsecore tables. 
+  # set LR to 0 -> complete train eval steps, set back to original lr
+  logging.info('started dummy train step')
   for i in model.optimizer.optimizers:
       i.learning_rate = 0.0
   with strategy.scope():
@@ -363,10 +363,9 @@ def main(_) -> None:
       inputs = generate_dummy_data(2112)
       #print(inputs)
       train_loop(inputs)
-  print('finished_dummy_train_step')  
+  logging.info('finished_dummy_train_step')  
   for i in model.optimizer.optimizers:
       i.learning_rate = 0.0034
-  '''
     
   if params.trainer.use_orbit:
     with strategy.scope():
@@ -478,4 +477,3 @@ if __name__ == '__main__':
   logging.set_verbosity(logging.INFO)
   common.define_flags()
   app.run(main)
-
