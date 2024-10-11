@@ -258,9 +258,7 @@ class RankingTrainer(base_trainer.Trainer):
   
   def calculate_roc_async(self, outputs):
     """Calculate ROC metrics in a separate thread."""
-    x = perf_counter()
     outputs_np = outputs.numpy()
-    logging.info(f'numpy conversion took: {perf_counter() - x} seconds')
     labels_np = outputs_np[:, 0::2, :]
     predictions_np = outputs_np[:, 1::2, :]
     
@@ -271,9 +269,7 @@ class RankingTrainer(base_trainer.Trainer):
     predictions_np = predictions_np[mask]
     if self._stop_training:
         return
-    x = perf_counter()
     auc = cpp_auc.roc_auc_score(labels_np.astype(np.bool), predictions_np.astype(np.float32))
-    logging.info(f' auc calculation took: {perf_counter() - x} seconds')
     self.mllogger.end(
       key=mllog_constants.EVAL_ACCURACY,
       value=auc,
