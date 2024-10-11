@@ -24,6 +24,7 @@ from absl import logging
 from orbit import runner
 from orbit import utils
 
+import threading
 import tensorflow as tf, tf_keras
 
 # pylint: disable=g-direct-tensorflow-import
@@ -55,7 +56,6 @@ def _format_output(output, indent=4):
 
 
 Action = Callable[[runner.Output], None]
-
 
 class Controller:
   """Class that controls the outer loop of model training and evaluation.
@@ -214,7 +214,7 @@ class Controller:
     self.eval_actions = () if eval_actions is None else tuple(eval_actions)
 
     self.global_step = global_step
-    self.checkpoint_manager = checkpoint_manager
+    self.checkpoint_manager = None # checkpoint_manager
     self._enable_async_checkpoint_saving = enable_async_checkpointing
     self._checkpoint_options = tf.train.CheckpointOptions(
         enable_async=enable_async_checkpointing
@@ -275,7 +275,6 @@ class Controller:
 
     # TODO(momernick): Support steps=None or -1 (training to exhaustion).
     current_step = self.global_step.numpy()  # Cache, since this is expensive.
-    _log(f"train | step: {current_step: 6d} | training until step {steps}...")
     while current_step < steps:
       # Calculates steps to run for the next train loop.
       num_steps = min(steps - current_step, self.steps_per_loop)
@@ -283,10 +282,6 @@ class Controller:
       self._maybe_save_checkpoint()
       current_step = self.global_step.numpy()
 
-    if checkpoint_at_completion:
-      self._maybe_save_checkpoint(check_interval=False)
-
-    self._sync_on_async_checkpointing()
 
   def evaluate(self, steps: int = -1) -> Optional[runner.Output]:
     """Runs evaluation for the given number of steps.
@@ -310,43 +305,16 @@ class Controller:
     """
     self._require("evaluator", for_method="evaluate")
 
-    if steps > 0:
-      steps_msg = f"running {steps} steps of evaluation..."
-    elif steps == -1:
-      steps_msg = "running complete evaluation..."
-    else:
-      raise ValueError(f"`steps` ({steps}) should be > 0, or == -1.")
+    
 
-    current_step = self.global_step.numpy()
-    _log(f" eval | step: {current_step: 6d} | {steps_msg}")
+    
 
-    start = time.time()
     assert isinstance(self.evaluator, runner.AbstractEvaluator)
     with self.eval_summary_manager.summary_writer().as_default():
       steps_tensor = tf.convert_to_tensor(steps, dtype=tf.int32)
       eval_output = self.evaluator.evaluate(steps_tensor)
-    elapsed = time.time() - start
 
-    eval_output = eval_output or {}
-    for action in self.eval_actions:
-      action(eval_output)
-    eval_output = tf.nest.map_structure(utils.get_value, eval_output)
-
-    if steps > 0:
-      # Only log if steps has been specified.
-      steps_per_second = steps / elapsed
-      eval_output["steps_per_second"] = steps_per_second
-      steps_per_second_log = f"steps/sec: {steps_per_second: 6.1f} | "
-    else:
-      steps_per_second_log = ""
-
-    _log(f" eval | step: {current_step: 6d} | "
-         f"{steps_per_second_log}"
-         f"eval time: {elapsed: 6.1f} sec | "
-         f"output: {_format_output(eval_output)}")
-
-    self.eval_summary_manager.write_summaries(eval_output)
-    self.eval_summary_manager.flush()
+    
 
     return eval_output
 
@@ -384,17 +352,24 @@ class Controller:
     self._require("trainer", for_method="train_and_evaluate")
     self._require("evaluator", for_method="train_and_evaluate")
 
+    
     output = None
     current_step = self.global_step.numpy()  # Cache, since this is expensive.
     eval_interval = eval_interval or (train_steps - current_step)
     while current_step < train_steps:
       interval = min(train_steps - current_step, eval_interval)
       num_steps = current_step + interval
+      if self.evaluator._stop_training == True:
+          break
+
       self.train(steps=num_steps, checkpoint_at_completion=False)
+      if self.evaluator._stop_training == True:
+          break
       output = self.evaluate(steps=eval_steps)
       current_step = self.global_step.numpy()
-    self._maybe_save_checkpoint(check_interval=False)
-    self._sync_on_async_checkpointing()
+
+
+    self.evaluator.run_stop()
     return output
 
   def evaluate_continuously(
@@ -514,31 +489,9 @@ class Controller:
       assert isinstance(self.trainer, runner.AbstractTrainer)
       with tf.summary.record_if(should_record):
         num_steps_tensor = tf.convert_to_tensor(num_steps, dtype=tf.int32)
-        train_output = self.trainer.train(num_steps_tensor)
+        self.trainer.train(num_steps_tensor)
 
-    # Verify that global_step was updated properly, then update current_step.
-    expected_step = current_step + num_steps
-    if self.global_step.numpy() != expected_step:
-      message = (
-          f"`trainer.train({num_steps})` did not update `global_step` by "
-          f"{num_steps}. Old value was {current_step}, expected updated value "
-          f"to be {expected_step}, but it was {self.global_step.numpy()}.")
-      logging.warning(message)
-
-    train_output = train_output or {}
-    for action in self.train_actions:
-      action(train_output)
-    train_output = tf.nest.map_structure(utils.get_value, train_output)
-
-    current_step = self.global_step.numpy()
-    steps_per_second = self.step_timer.steps_per_second()
-    _log(f"train | step: {current_step: 6d} | "
-         f"steps/sec: {steps_per_second: 6.1f} | "
-         f"output: {_format_output(train_output)}")
-
-    train_output["steps_per_second"] = steps_per_second
-    self.summary_manager.write_summaries(train_output)
-    self.summary_manager.flush()
+    
 
   def _maybe_save_checkpoint(self, check_interval: bool = True):
     """Conditionally saves a checkpoint.
@@ -598,3 +551,4 @@ class StepTimer:
     if restart:
       self.start()
     return value
+

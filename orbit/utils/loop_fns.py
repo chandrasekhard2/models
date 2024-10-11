@@ -16,9 +16,8 @@
 
 from absl import logging
 from orbit.utils import tpu_summaries
-
+import numpy as np
 import tensorflow as tf, tf_keras
-
 
 def create_loop_fn(step_fn):
   """Creates a loop function driven by a Python `while` loop.
@@ -140,7 +139,9 @@ def create_tf_while_loop_fn_with_state(step_fn):
     definition below for additional details.
   """
 
-  def loop_fn_with_state(iterator, num_steps, state, reduce_fn):
+
+
+  def loop_fn_with_state(iterator, num_steps):
     """Makes `num_steps` calls to `step_fn(iterator)`.
 
     Args:
@@ -171,23 +172,17 @@ def create_tf_while_loop_fn_with_state(step_fn):
         return tf.TensorShape([None] * shape.rank)
       return shape
 
-    def _get_relaxed_shape_structure(s):
-      """Returns the relaxed shape of the input nested structure `s`."""
-      return tf.nest.pack_sequence_as(
-          state, [_get_relaxed_tensor_shape(t) for t in tf.nest.flatten(s)])
+    output = tf.TensorArray(dtype=tf.bfloat16, size=num_steps)
 
     for _ in tf.range(num_steps):
-      # Clear out the outer name scope so the ops created inside `tf.while_loop`
-      # don't get "while/" as name prefix.
+      tf.autograph.experimental.set_loop_options(parallel_iterations=16) 
       with tf.name_scope(""):
-        # Relax the shapes within the loop, so the shape of `state` can change
-        # across iterations. This is useful to aggregate outputs from each step
-        # and concat to `state`.
-        tf.autograph.experimental.set_loop_options(
-            shape_invariants=[(state, _get_relaxed_shape_structure(state))])
         outputs = step_fn(iterator)
-        state = reduce_fn(state, outputs)
-    return state
+        x = tf.distribute.get_strategy().experimental_local_results(outputs)
+        y = tf.concat(x, axis=0)
+        output = output.write(_, y)
+
+    return output.stack()
 
   return loop_fn_with_state
 
@@ -205,3 +200,4 @@ class LoopFnWithSummaries(tpu_summaries.OptionalSummariesFunction):
     if num_steps >= 1:
       output = self.without_summaries(iterator, num_steps)
     return output
+

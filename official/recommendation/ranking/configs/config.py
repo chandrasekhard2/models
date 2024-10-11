@@ -61,6 +61,9 @@ class OptimizationConfig(hyperparams.Config):
   )
   embedding_optimizer: str = 'SGD'
   dense_optimizer: str = 'Adam'
+  initial_accumulator_value: float = 0.0
+  epsilon: float = 1e-8
+
 
 
 @dataclasses.dataclass
@@ -75,6 +78,7 @@ class DataConfig(hyperparams.Config):
   sharding: bool = True
   num_shards_per_host: int = 8
   use_cached_data: bool = False
+  num_shards: int = 1
 
 
 @dataclasses.dataclass

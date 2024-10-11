@@ -288,22 +288,8 @@ class OrbitExperimentRunner:
       else:
         raise NotImplementedError('The mode is not implemented: %s' % mode)
 
-    num_params = train_utils.try_count_params(self.trainer.model)
-    if num_params is not None:
-      logging.info('Number of trainable params in model: %f Millions.',
-                   num_params / 10.**6)
-
-    flops = train_utils.try_count_flops(self.trainer.model)
-    if flops is not None:
-      logging.info('FLOPs (multi-adds) in model: %f Billions.',
-                   flops / 10.**9 / 2)
-
-    if self._run_post_eval or mode == 'train_and_post_eval':
-      with self.strategy.scope():
-        return self.trainer.model, self.controller.evaluate(  # pytype: disable=bad-return-type  # always-use-property-annotation
-            steps=params.trainer.validation_steps)
-    else:
-      return self.trainer.model, {}
+    
+    return self.trainer.model, {}
 
 
 def run_experiment(

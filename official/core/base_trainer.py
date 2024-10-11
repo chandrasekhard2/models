@@ -24,10 +24,13 @@ from absl import logging
 import gin
 import orbit
 import tensorflow as tf, tf_keras
-
+import numpy as np
+from sklearn import metrics
 from official.core import base_task
+from tensorflow.compiler.tf2xla.python import xla as xla_ops
 from official.core import config_definitions
 from official.modeling import optimization
+import threading
 
 ExperimentConfig = config_definitions.ExperimentConfig
 TrainerConfig = config_definitions.TrainerConfig
@@ -142,7 +145,7 @@ class Trainer(_AsyncTrainer):
       self,
       config: ExperimentConfig,
       task: base_task.Task,
-      model: tf_keras.Model,
+      model: tf.keras.Model,
       optimizer: tf.optimizers.Optimizer,
       train: bool = True,
       evaluate: bool = True,
@@ -156,7 +159,7 @@ class Trainer(_AsyncTrainer):
     Args:
       config: An `ExperimentConfig` instance specifying experiment config.
       task: A base_task.Task instance.
-      model: The model instance, e.g. a tf_keras.Model instance.
+      model: The model instance, e.g. a tf.keras.Model instance.
       optimizer: tf.optimizers.Optimizer instance.
       train: bool, whether or not this trainer will be used for training.
         default to True.
@@ -207,8 +210,8 @@ class Trainer(_AsyncTrainer):
         optimizer=self.optimizer,
         **checkpoint_items)
 
-    self._train_loss = tf_keras.metrics.Mean("training_loss", dtype=tf.float32)
-    self._validation_loss = tf_keras.metrics.Mean(
+    self._train_loss = tf.keras.metrics.Mean("training_loss", dtype=tf.float32)
+    self._validation_loss = tf.keras.metrics.Mean(
         "validation_loss", dtype=tf.float32)
     model_metrics = model.metrics if hasattr(model, "metrics") else []
 
@@ -388,12 +391,12 @@ class Trainer(_AsyncTrainer):
         task_train_step = tf.function(self.task.train_step, jit_compile=True)
       else:
         task_train_step = self.task.train_step
-      logs = task_train_step(
-          inputs,
-          model=self.model,
-          optimizer=self.optimizer,
-          metrics=self.train_metrics)
-      self._train_loss.update_state(logs[self.task.loss])
+        task_train_step(
+            inputs,
+            model=self.model,
+            optimizer=self.optimizer,
+            metrics=self.train_metrics,
+        )
       self.global_step.assign_add(1)
 
     inputs = self.next_train_inputs(iterator)
@@ -430,69 +433,32 @@ class Trainer(_AsyncTrainer):
       are not passed to the model, instead they are merged with model output
       logs.
     """
-    passthrough_logs = dict()
-    return next(iterator), passthrough_logs
+    return next(iterator)
 
   def eval_step(self, iterator):
     """See base class."""
 
+    #assert not tf.executing_eagerly()
     def step_fn(inputs):
-      logs = self.task.validation_step(
+      label, prediction = self.task.validation_step(
           inputs, model=self.model, metrics=self.validation_metrics)
-      if self.task.loss in logs:
-        self._validation_loss.update_state(logs[self.task.loss])
-      return logs
-
-    inputs, passthrough_logs = self.next_eval_inputs(iterator)
-    distributed_outputs = self.strategy.run(step_fn, args=(inputs,))
-    logs = tf.nest.map_structure(
-        self.strategy.experimental_local_results, distributed_outputs
+      label = tf.cast(label, tf.bfloat16)
+      label = tf.expand_dims(label, 0)
+      prediction = tf.expand_dims(prediction, 0)
+      output = tf.concat([label, prediction], axis=0)
+      return output
+    
+    inputs = self.next_eval_inputs(iterator)
+    output = self.strategy.run(
+        step_fn, args=(inputs,)
     )
+    return output
 
-    if set(logs.keys()) & set(passthrough_logs.keys()):
-      logging.warning(
-          (
-              "Conflict between the pasthrough log keys and the returned model"
-              " log keys. Found %r keys in the passthrough logs and %r keys in"
-              " the model logs. Model log keys takes precedence."
-          ),
-          logs.keys(),
-          passthrough_logs.keys(),
-      )
 
-    return {**passthrough_logs, **logs}
+  def eval_reduce(self, state=None, step_outputs=None, step=None):
+    combined_output = self.strategy.gather(step_outputs, axis=0)
+    state = xla_ops.dynamic_update_slice(
+        state, tf.expand_dims(combined_output, 0), [step, 0, 0]
+    )
+    return state
 
-  def eval_end(self, aggregated_logs=None):
-    """Processes evaluation results."""
-    self.join()
-    logs = {}
-    for metric in self.validation_metrics:
-      logs[metric.name] = metric.result()
-    if self.validation_loss.count.numpy() != 0:
-      logs[self.validation_loss.name] = self.validation_loss.result()
-    else:
-      # `self.validation_loss` metric was not updated, because the validation
-      # loss was not returned from the task's `validation_step` method.
-      logging.info("The task did not report validation loss.")
-    if aggregated_logs:
-      metrics = self.task.reduce_aggregated_logs(
-          aggregated_logs, global_step=self.global_step)
-      logs.update(metrics)
-
-    if self._checkpoint_exporter:
-      self._checkpoint_exporter.maybe_export_checkpoint(
-          self.checkpoint, logs, self.global_step.numpy())
-      metric_name = self.config.trainer.best_checkpoint_eval_metric
-      logs["best_" +
-           metric_name] = self._checkpoint_exporter.best_ckpt_logs[metric_name]
-
-    # Swaps back weights after testing when EMA is used.
-    # This happens after best checkpoint export so that average weights used for
-    # eval are exported instead of regular weights.
-    if self.optimizer and isinstance(self.optimizer,
-                                     optimization.ExponentialMovingAverage):
-      self.optimizer.swap_weights()
-    return logs
-
-  def eval_reduce(self, state=None, step_outputs=None):
-    return self.task.aggregate_logs(state, step_outputs)

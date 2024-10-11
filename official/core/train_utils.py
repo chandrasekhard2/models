@@ -385,8 +385,8 @@ def parse_configuration(flags_obj, lock_return=True, print_return=True):
 
   if print_return:
     pp = pprint.PrettyPrinter()
-    logging.info('Final experiment parameters:\n%s',
-                 pp.pformat(params.as_dict()))
+    #logging.info('Final experiment parameters:\n%s',
+    #             pp.pformat(params.as_dict()))
 
   return params
 

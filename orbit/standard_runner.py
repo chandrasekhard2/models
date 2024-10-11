@@ -38,12 +38,12 @@ import abc
 from typing import Any, Optional
 
 import dataclasses
+import logging
 
 from orbit import runner
 from orbit.utils import loop_fns
 
 import tensorflow as tf, tf_keras
-
 
 @dataclasses.dataclass(frozen=True)
 class StandardTrainerOptions:
@@ -211,7 +211,7 @@ class StandardTrainer(runner.AbstractTrainer, metaclass=abc.ABCMeta):
     self._train_iter = None
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass()
 class StandardEvaluatorOptions:
   """Advanced options for the `orbit.StandardEvaluator`.
 
@@ -231,8 +231,8 @@ class StandardEvaluatorOptions:
       state is maintained between calls to `StandardEvaluator.evaluate()`.
   """
   use_tf_function: bool = True
-  use_tf_while_loop: bool = False
-  recreate_iterator_for_each_eval: bool = True
+  use_tf_while_loop: bool = True
+  recreate_iterator_for_each_eval: bool = False
 
 
 class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
@@ -277,9 +277,11 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
                        "is not supported")
 
     self._eval_options = options
+    self._eval_options.recreate_iterator_for_each_eval = False
     self._eval_dataset = eval_dataset
     self._eval_iter = None
     self._eval_loop_fn = None
+    self._stop_training = False
 
   def create_eval_loop_fn(self, has_state: bool):
     """Creates an eval loop from the current step function and options.
@@ -295,14 +297,11 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
       # TODO(b/176126742): tf.while_loop doesn't support `None` as a loop input
       # even when it is not used inside the loop. To workaround this limitation,
       # we have to build two tf.functions for it.
-      if has_state:
-        loop_fn = loop_fns.create_tf_while_loop_fn_with_state(eval_step_fn)
-      else:
-        loop_fn = loop_fns.create_tf_while_loop_fn(eval_step_fn)
+      loop_fn = loop_fns.create_tf_while_loop_fn_with_state(eval_step_fn)
       loop_fn = tf.function(loop_fn)
     else:
       if self._eval_options.use_tf_function:
-        eval_step_fn = tf.function(eval_step_fn)
+        eval_step_fn = tf.function(eval_step_fn, reduce_retracing=True)
       loop_fn = loop_fns.create_loop_fn(eval_step_fn)
     return loop_fn
 
@@ -325,9 +324,12 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
       raise ValueError("Looping until exhausted is not supported if "
                        "`options.use_tf_while_loop` is `True`")
 
-    outputs = self.eval_begin()  # pylint: disable=assignment-from-no-return
-
-    has_state = outputs is not None
+    self.eval_begin()  # pylint: disable=assignment-from-no-return
+    
+    #outputs = tf.zeros((10, 64, 2, 2112), dtype=tf.bfloat16)
+    #outputs = tf.zeros((1, 128, 2112), dtype=tf.bfloat16)
+    outputs = tf.Variable(tf.zeros((1, 2, 2112), dtype=tf.float32), dtype=tf.float32)
+    has_state = True 
     if self._eval_loop_fn is None:
       self._eval_loop_fn = self.create_eval_loop_fn(has_state)
 
@@ -343,9 +345,9 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
     if self._eval_options.use_tf_while_loop and not has_state:
       self._eval_loop_fn(eval_iter, num_steps)
     else:
-      outputs = self._eval_loop_fn(
-          eval_iter, num_steps, state=outputs, reduce_fn=self.eval_reduce)
-
+      outputs = self._eval_loop_fn(eval_iter, num_steps) 
+      outputs = tf.cast(outputs, tf.float32)
+      
     if outputs is None:
       return self.eval_end()
     else:
@@ -448,3 +450,4 @@ class StandardEvaluator(runner.AbstractEvaluator, metaclass=abc.ABCMeta):
     """
     self._eval_dataset = eval_dataset
     self._eval_iter = None
+
